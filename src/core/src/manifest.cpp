@@ -87,6 +87,11 @@ std::optional<Package> parseManifestText(std::string_view text, const std::files
         si.kind = (*t)["kind"].value_or(std::string{"archive"});
         si.url = (*t)["url"].value_or(std::string{});
         si.sha256 = (*t)["sha256"].value_or(std::string{});
+        if (auto* arr = (*t)["patches"].as_array()) {
+            for (const auto& el : *arr)
+                if (auto s = el.value<std::string>())
+                    si.patches.push_back(*s);
+        }
         out.source = si;
     }
 

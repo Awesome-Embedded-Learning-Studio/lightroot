@@ -6,6 +6,7 @@ add_executable(test_lightroot
   test_manifest.cpp
   test_config.cpp
   test_device_table.cpp
+  test_lockfile.cpp
   test_registry.cpp
   test_resolver.cpp
   test_doctor.cpp

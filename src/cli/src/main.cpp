@@ -14,6 +14,7 @@
 #include <lightroot/diagnostic.h>
 #include <lightroot/doctor.h>
 #include <lightroot/executor.h>
+#include <lightroot/lockfile.h>
 #include <lightroot/manifest.h>
 #include <lightroot/registry.h>
 #include <lightroot/resolver.h>
@@ -89,6 +90,8 @@ struct LoadedPlan {
     std::vector<std::string> image_formats{"tar"}; ///< From [rootfs].image_formats.
     std::filesystem::path device_table_file;       ///< From [rootfs].device_table.
     std::filesystem::path output_dir{"out"};       ///< From top-level output_dir.
+    std::vector<std::string> selected;             ///< Root selections (lockfile context).
+    std::map<std::string, std::string> providers;  ///< Provider bindings (lockfile context).
 };
 
 /// Scan package roots, parse the project config, and resolve the plan.
@@ -105,6 +108,8 @@ LoadedPlan loadAndResolve(const std::vector<std::string>& roots, const std::stri
         lp.image_formats = cfg->image_formats;
         lp.device_table_file = cfg->device_table_file;
         lp.output_dir = cfg->output_dir;
+        lp.selected = cfg->selected;
+        lp.providers = cfg->providers;
         for (const auto& [k, v] : cfg->providers)
             explicit_providers[stripVirtual(k)] = v;
         for (const auto& s : cfg->selected) {
@@ -163,8 +168,49 @@ int runDoctor(const std::string& config_path) {
 
 int runBuild(const std::vector<std::string>& roots, const std::string& config_path,
              const std::vector<std::string>& image_format_overrides,
-             const std::string& device_table_override) {
+             const std::string& device_table_override, const std::string& lock_path,
+             bool update_lock) {
     const auto lp = loadAndResolve(roots, config_path);
+
+    if (!lp.plan.ok()) {
+        fmt::print(stderr, "resolve: plan has errors; aborting build.\n");
+        for (const auto& d : lp.plan.diagnostics)
+            fmt::print(stderr, "  {} [{}]: {}\n", to_string(d.severity), d.code, d.message);
+        return 1;
+    }
+
+    // Lockfile gate: pin reproducibility. `--update-lock` refreshes it; otherwise
+    // a present lockfile must match the freshly-resolved plan or the build is
+    // refused, so a dependency/provider/version change never rebuilds silently.
+    if (update_lock) {
+        if (!lightroot::writeLockfile(fs::path{lock_path}, lp.plan, lp.toolchain, lp.selected,
+                                      lp.providers)) {
+            fmt::print(stderr, "lock: failed to write {}\n", lock_path);
+            return 1;
+        }
+        fmt::print(stderr, "lock: wrote {} ({} packages)\n", lock_path, lp.plan.steps.size());
+    } else {
+        std::error_code ec;
+        if (fs::exists(lock_path, ec)) {
+            std::vector<lightroot::LockfileError> lerrs;
+            if (auto lock = lightroot::parseLockfile(lock_path, lerrs)) {
+                const auto drift = lightroot::checkLockfileDrift(*lock, lp.plan);
+                if (!drift.empty()) {
+                    fmt::print(stderr, "lock: drift vs {} — build refused for reproducibility.\n",
+                               lock_path);
+                    fmt::print(stderr, "{}", drift.summary());
+                    fmt::print(
+                        stderr,
+                        "refresh with `lightroot lock` or `lightroot build --update-lock`.\n");
+                    return 1;
+                }
+            } else {
+                // An unreadable lockfile warns but does not block (don't fail on corruption).
+                for (const auto& e : lerrs)
+                    fmt::print(stderr, "warn: lockfile: {}\n", e.message);
+            }
+        }
+    }
 
     // Doctor gate: refuse to build on a failing toolchain.
     const auto report = lightroot::runDoctor(lp.toolchain);
@@ -172,13 +218,6 @@ int runBuild(const std::vector<std::string>& roots, const std::string& config_pa
         fmt::print(stderr, "doctor: toolchain/host checks failed; aborting build.\n");
         for (const auto& c : report.checks)
             fmt::print(stderr, "  {} {}\n", lightroot::to_string(c.status), c.name);
-        return 1;
-    }
-
-    if (!lp.plan.ok()) {
-        fmt::print(stderr, "resolve: plan has errors; aborting build.\n");
-        for (const auto& d : lp.plan.diagnostics)
-            fmt::print(stderr, "  {} [{}]: {}\n", to_string(d.severity), d.code, d.message);
         return 1;
     }
 
@@ -210,6 +249,24 @@ int runBuild(const std::vector<std::string>& roots, const std::string& config_pa
     return result.ok() ? 0 : 1;
 }
 
+int runLock(const std::vector<std::string>& roots, const std::string& config_path,
+            const std::string& lock_path) {
+    const auto lp = loadAndResolve(roots, config_path);
+    if (!lp.plan.ok()) {
+        fmt::print(stderr, "resolve: plan has errors; cannot lock.\n");
+        for (const auto& d : lp.plan.diagnostics)
+            fmt::print(stderr, "  {} [{}]: {}\n", to_string(d.severity), d.code, d.message);
+        return 1;
+    }
+    if (!lightroot::writeLockfile(fs::path{lock_path}, lp.plan, lp.toolchain, lp.selected,
+                                  lp.providers)) {
+        fmt::print(stderr, "lock: failed to write {}\n", lock_path);
+        return 1;
+    }
+    fmt::print("lock: wrote {} ({} packages)\n", lock_path, lp.plan.steps.size());
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -222,6 +279,8 @@ int main(int argc, char** argv) {
 
     std::vector<std::string> build_image_formats; // overrides [rootfs].image_formats
     std::string build_device_table;               // overrides [rootfs].device_table
+    std::string lock_path{"lightroot.lock"};      // lockfile path (lock/build)
+    bool build_update_lock = false;               // build: refresh the lockfile
 
     auto* list_cmd = app.add_subcommand("list", "List indexed packages");
     list_cmd->add_option("--root,-r", pkg_roots, "Package tree roots to scan")
@@ -251,6 +310,16 @@ int main(int argc, char** argv) {
         ->expected(0, -1);
     build_cmd->add_option("--device-table", build_device_table,
                           "Device-table TOML file; overrides [rootfs].device_table");
+    build_cmd->add_option("--lock", lock_path, "Lockfile path")->capture_default_str();
+    build_cmd->add_flag("--update-lock", build_update_lock,
+                        "Refresh the lockfile from the current plan, then build");
+
+    auto* lock_cmd = app.add_subcommand("lock", "Write a reproducible-build lockfile");
+    lock_cmd->add_option("--root,-r", pkg_roots, "Package tree roots to scan")
+        ->expected(1, -1)
+        ->capture_default_str();
+    lock_cmd->add_option("--config,-c", config_path, "Project config file")->capture_default_str();
+    lock_cmd->add_option("--lock", lock_path, "Lockfile path")->capture_default_str();
 
     CLI11_PARSE(app, argc, argv);
 
@@ -267,7 +336,10 @@ int main(int argc, char** argv) {
     if (name == "doctor")
         return runDoctor(config_path);
     if (name == "build")
-        return runBuild(pkg_roots, config_path, build_image_formats, build_device_table);
+        return runBuild(pkg_roots, config_path, build_image_formats, build_device_table, lock_path,
+                        build_update_lock);
+    if (name == "lock")
+        return runLock(pkg_roots, config_path, lock_path);
     std::cout << app.help();
     return 0;
 }

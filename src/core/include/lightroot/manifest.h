@@ -38,6 +38,12 @@ struct SourceInfo {
     std::string kind;   ///< Source kind, e.g. "archive".
     std::string url;    ///< Fetch URL.
     std::string sha256; ///< Integrity hash.
+
+    /// Patch files to apply after extract, before configure. Paths are relative
+    /// to the manifest's directory (resolved like a local source URL). Applied in
+    /// order at the `patch` lifecycle phase via `patch -p1 -i <file>`, unless an
+    /// explicit `[build.patch].run` overrides the command.
+    std::vector<std::string> patches;
 };
 
 /**

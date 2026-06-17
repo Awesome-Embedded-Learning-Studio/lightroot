@@ -1,0 +1,29 @@
+[package]
+name = "linux-kernel"
+version = "6.6.72"
+summary = "Linux kernel: arm64 defconfig, static Image (bootloader/qemu payload)."
+license = "GPL-2.0-only"
+scope = "target"
+depends = []
+
+[source]
+kind = "archive"
+url = "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.6.72.tar.xz"
+sha256 = "feb9e514930d5968daa0b8b5486d3295d1fb2b34accf876207641884d4baef39"
+
+[build]
+backend = "script"
+
+# defconfig yields a generic bootable arm64 kernel (validated under qemu).
+[build.configure]
+run = ["make ARCH=$LIGHTROOT_ARCH CROSS_COMPILE=$LIGHTROOT_CROSS_COMPILE defconfig"]
+
+# Build only the boot Image (no modules; defconfig is monolithic). The boot image
+# name is arch-specific ("Image" on arm64) — for other archs adjust the install cp.
+[build.build]
+run = ["make ARCH=$LIGHTROOT_ARCH CROSS_COMPILE=$LIGHTROOT_CROSS_COMPILE -j$LIGHTROOT_JOBS Image"]
+
+# The Image is a standalone boot artifact, not part of the rootfs, so it goes to
+# the output root via $LIGHTROOT_OUT (not DESTDIR) — it never enters rootfs.tar.gz.
+[build.install_staging]
+run = ["mkdir -p $LIGHTROOT_OUT", "cp arch/$LIGHTROOT_ARCH/boot/Image $LIGHTROOT_OUT/Image"]

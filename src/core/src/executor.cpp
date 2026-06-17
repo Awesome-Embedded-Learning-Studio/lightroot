@@ -19,7 +19,8 @@ namespace {
 using Env = std::vector<std::pair<std::string, std::string>>;
 
 /// Known build-phase keys in lifecycle order.
-constexpr std::string_view PHASES[] = {"configure", "build", "install_staging", "install_target"};
+constexpr std::string_view PHASES[] = {"patch", "configure", "build", "install_staging",
+                                       "install_target"};
 
 /// Join `parts` with `sep`.
 std::string join(const std::vector<std::string>& parts, std::string_view sep) {
@@ -75,6 +76,7 @@ std::string linuxArch(std::string_view target) {
 
 /// Build the cross-compile environment for a phase.
 Env crossEnv(const ToolchainConfig& tc, int jobs, const std::filesystem::path& destdir,
+             const std::filesystem::path& out_root,
              const std::map<std::string, std::string>& extra) {
     Env env{{"CC", tc.prefix + "gcc"},
             {"CXX", tc.prefix + "g++"},
@@ -87,7 +89,8 @@ Env crossEnv(const ToolchainConfig& tc, int jobs, const std::filesystem::path& d
             {"LIGHTROOT_PREFIX", "/usr"},
             {"LIGHTROOT_SYSROOT", tc.sysroot},
             {"LIGHTROOT_CROSS_COMPILE", tc.prefix},
-            {"LIGHTROOT_ARCH", linuxArch(tc.target)}};
+            {"LIGHTROOT_ARCH", linuxArch(tc.target)},
+            {"LIGHTROOT_OUT", out_root.string()}};
     if (!tc.sysroot.empty()) {
         const auto sf = "--sysroot=" + tc.sysroot;
         env.emplace_back("CFLAGS", sf);
@@ -157,6 +160,15 @@ std::filesystem::path resolveSourcePath(const Package& p, std::string_view url) 
         return raw;
     std::error_code ec;
     return std::filesystem::weakly_canonical(p.origin.parent_path() / raw, ec);
+}
+
+/// Synthesize the `patch` phase command: apply each declared patch (relative to
+/// the manifest dir) in order with `patch -p1 -i`. Run in the extracted workdir.
+std::string patchCommand(const Package& p) {
+    std::vector<std::string> parts;
+    for (const auto& patch : p.source->patches)
+        parts.push_back("patch -p1 -i " + shellQuote(resolveSourcePath(p, patch).string()));
+    return join(parts, " && ");
 }
 
 /// A rootfs image format the executor can produce.
@@ -459,13 +471,22 @@ ExecutorResult executePlan(const PackageRegistry& reg, const BuildPlan& plan,
                                     ? defaultPhases(p->build->backend)
                                     : p->build->phases;
             for (auto phase : PHASES) {
+                // Resolve this phase's command: an explicit `[build.<phase>].run`
+                // wins; for `patch` only, fall back to synthesizing `patch -p1`
+                // commands from `[source].patches`.
+                std::string cmd;
                 const auto it = phases.find(std::string(phase));
-                if (it == phases.end() || it->second.run.empty())
+                if (it != phases.end() && !it->second.run.empty())
+                    cmd = join(it->second.run, " && ");
+                else if (std::string_view(phase) == "patch" && p->source &&
+                         !p->source->patches.empty())
+                    cmd = patchCommand(*p);
+                if (cmd.empty())
                     continue;
                 const auto env = crossEnv(cfg.toolchain, jobs, destDirFor(phase, staging, target),
-                                          p->build->env);
-                ok = runShellPhase(el, pkg, std::string(phase), join(it->second.run, " && "),
-                                   workdir, pkg_logs / (std::string(phase) + ".log"), env);
+                                          root, p->build->env);
+                ok = runShellPhase(el, pkg, std::string(phase), cmd, workdir,
+                                   pkg_logs / (std::string(phase) + ".log"), env);
                 if (!ok)
                     break;
             }

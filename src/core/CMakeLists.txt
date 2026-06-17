@@ -9,7 +9,8 @@ add_library(lightroot_core STATIC
   src/resolver.cpp
   src/exec.cpp
   src/doctor.cpp
-  src/executor.cpp)
+  src/executor.cpp
+  src/lockfile.cpp)
 
 target_include_directories(lightroot_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(lightroot_core PUBLIC cxx_std_20)

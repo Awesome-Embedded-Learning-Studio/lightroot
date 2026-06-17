@@ -9,7 +9,7 @@
  *
  * @details
  * Drives a resolved BuildPlan through the package lifecycle
- * (fetch -> verify -> extract -> configure -> build -> install-staging ->
+ * (fetch -> verify -> extract -> patch -> configure -> build -> install-staging ->
  * install-target), writing per-phase logs and a JSONL event stream, and
  * populating staging/target rootfs directories. LightRoot owns the lifecycle
  * and the cross-compile environment; the package backend owns the per-phase

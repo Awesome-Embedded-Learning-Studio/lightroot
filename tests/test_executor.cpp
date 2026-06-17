@@ -374,3 +374,119 @@ TEST(Executor, AssembleProducesRequestedFormats) {
     EXPECT_TRUE(fs::exists(out / "rootfs.cpio.gz"));
     EXPECT_GE(res.image_paths.size(), 2u);
 }
+
+TEST(Executor, PatchPhaseAppliesDeclaredPatches) {
+    TempDir work;
+    const auto manifest = work.path() / "pkg.toml"; // origin for relative patch resolution
+    writeFile(manifest, "[package]\nname = \"p\"\n");
+    const auto src = work.path() / "src";
+    fs::create_directories(src);
+    writeFile(src / "version.txt", "1\n");
+    writeFile(src / "Makefile", "install:\n\tinstall -D version.txt $(DESTDIR)/version.txt\n");
+    fs::create_directories(work.path() / "patches");
+    writeFile(work.path() / "patches" / "0001-bump.patch",
+              "--- a/version.txt\n+++ b/version.txt\n@@ -1 +1 @@\n-1\n+2\n");
+
+    Package p = makeLocalPackage("p", src);
+    p.origin = manifest;
+    p.source->patches.push_back("patches/0001-bump.patch"); // relative to manifest dir
+    BuildInfo bi;
+    bi.backend = "script";
+    bi.phases["install_target"].run = {"make install"};
+    p.build = bi;
+
+    PackageRegistry reg;
+    reg.add(std::move(p));
+    const auto out = work.path() / "out";
+    const auto res = executePlan(reg, singleStepPlan("p"), basicConfig(out));
+    ASSERT_TRUE(res.ok()) << (res.failed.empty() ? "" : res.failed[0]);
+    // The patch (1 -> 2) was applied before install copied version.txt out.
+    EXPECT_EQ(readFile(out / "target" / "version.txt"), "2\n");
+    EXPECT_TRUE(fs::exists(out / "logs" / "packages" / "p" / "patch.log"));
+}
+
+TEST(Executor, PatchPhaseAppliesMultipleInOrder) {
+    TempDir work;
+    const auto manifest = work.path() / "pkg.toml";
+    writeFile(manifest, "[package]\nname = \"p\"\n");
+    const auto src = work.path() / "src";
+    fs::create_directories(src);
+    writeFile(src / "version.txt", "1\n");
+    writeFile(src / "Makefile", "install:\n\tinstall -D version.txt $(DESTDIR)/version.txt\n");
+    fs::create_directories(work.path() / "patches");
+    writeFile(work.path() / "patches" / "0001-a.patch",
+              "--- a/version.txt\n+++ b/version.txt\n@@ -1 +1 @@\n-1\n+2\n");
+    writeFile(work.path() / "patches" / "0002-b.patch",
+              "--- a/version.txt\n+++ b/version.txt\n@@ -1 +1 @@\n-2\n+3\n");
+
+    Package p = makeLocalPackage("p", src);
+    p.origin = manifest;
+    p.source->patches.push_back("patches/0001-a.patch");
+    p.source->patches.push_back("patches/0002-b.patch");
+    BuildInfo bi;
+    bi.backend = "script";
+    bi.phases["install_target"].run = {"make install"};
+    p.build = bi;
+
+    PackageRegistry reg;
+    reg.add(std::move(p));
+    const auto out = work.path() / "out";
+    const auto res = executePlan(reg, singleStepPlan("p"), basicConfig(out));
+    ASSERT_TRUE(res.ok());
+    EXPECT_EQ(readFile(out / "target" / "version.txt"), "3\n"); // 1 -> 2 -> 3
+}
+
+TEST(Executor, PatchPhaseExplicitRunOverridesPatches) {
+    TempDir work;
+    const auto manifest = work.path() / "pkg.toml";
+    writeFile(manifest, "[package]\nname = \"p\"\n");
+    const auto src = work.path() / "src";
+    fs::create_directories(src);
+    writeFile(src / "Makefile", "install:\n\tinstall -D marker $(DESTDIR)/marker\n");
+    fs::create_directories(work.path() / "patches");
+    // A declared patch that would set marker to "PATCHED"...
+    writeFile(work.path() / "patches" / "x.patch",
+              "--- a/marker\n+++ b/marker\n@@ -1 +1 @@\n-none\n+PATCHED\n");
+
+    Package p = makeLocalPackage("p", src);
+    p.origin = manifest;
+    p.source->patches.push_back("patches/x.patch");
+    BuildInfo bi;
+    bi.backend = "script";
+    // ...but an explicit [build.patch].run wins and writes "EXPLICIT" instead.
+    bi.phases["patch"].run = {"printf 'EXPLICIT\\n' > marker"};
+    bi.phases["install_target"].run = {"make install"};
+    p.build = bi;
+
+    PackageRegistry reg;
+    reg.add(std::move(p));
+    const auto out = work.path() / "out";
+    const auto res = executePlan(reg, singleStepPlan("p"), basicConfig(out));
+    ASSERT_TRUE(res.ok());
+    EXPECT_EQ(readFile(out / "target" / "marker"), "EXPLICIT\n");
+}
+
+TEST(Executor, ExposesOutputRootViaLightrootOut) {
+    // $LIGHTROOT_OUT points at the build output root, so a package can emit
+    // standalone artifacts (e.g. a kernel Image) alongside, not into, the rootfs.
+    TempDir work;
+    const auto src = work.path() / "src";
+    fs::create_directories(src);
+    writeFile(src / "hello", "hi");
+    writeFile(src / "Makefile", "install:\n\tinstall -D hello $(DESTDIR)/usr/bin/hello\n");
+
+    Package p = makeLocalPackage("hello", src);
+    BuildInfo bi;
+    bi.backend = "script";
+    bi.phases["build"].run = {"echo built > $LIGHTROOT_OUT/marker.txt"};
+    bi.phases["install_target"].run = {"make install"};
+    p.build = bi;
+
+    PackageRegistry reg;
+    reg.add(std::move(p));
+    const auto out = work.path() / "out";
+    const auto res = executePlan(reg, singleStepPlan("hello"), basicConfig(out));
+    ASSERT_TRUE(res.ok());
+    EXPECT_EQ(readFile(out / "marker.txt"), "built\n");
+    EXPECT_TRUE(fs::exists(out / "target" / "usr" / "bin" / "hello"));
+}
