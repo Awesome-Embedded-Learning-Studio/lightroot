@@ -1,0 +1,32 @@
+[package]
+name = "openssl"
+version = "3.2.1"
+summary = "TLS library and crypto toolkit."
+license = "Apache-2.0"
+scope = "target"
+provides = ["virtual:ssl"]
+depends = []
+
+[source]
+kind = "archive"
+url = "https://www.openssl.org/source/openssl-3.2.1.tar.gz"
+sha256 = "83c7329fe52c850677d75e5d0b0ca245309b97e8ecbcfdc1dfdc4ab9fac35b39"
+
+# OpenSSL uses its own ./Configure (not autotools ./configure), so the build
+# declares explicit lifecycle commands. No --cross-compile-prefix: the executor
+# already injects CC=<prefix>gcc, and OpenSSL would otherwise prepend the prefix
+# again (aarch64-linux-gnu-aarch64-linux-gnu-gcc).
+[build]
+backend = "script"
+
+[build.configure]
+run = ["./Configure linux-aarch64 --prefix=/usr no-shared no-tests no-sock"]
+
+[build.build]
+run = ["make -j$LIGHTROOT_JOBS"]
+
+[build.install_staging]
+run = ["make install_sw DESTDIR=$LIGHTROOT_DESTDIR"]
+
+[build.install_target]
+run = ["make install_sw DESTDIR=$LIGHTROOT_DESTDIR"]

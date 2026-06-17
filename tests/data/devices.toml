@@ -1,0 +1,26 @@
+# Example custom device table. Merged onto the built-in default device table
+# (same-path entries override); used by the device-table parser test.
+[[device]]
+path = "/dev/null"
+kind = "char"
+mode = 0o666
+uid = 0
+gid = 0
+major = 1
+minor = 3
+
+[[device]]
+path = "/dev/mmcblk0"
+kind = "block"
+mode = 0o660
+uid = 0
+gid = 0
+major = 179
+minor = 0
+
+[[device]]
+path = "/mnt"
+kind = "dir"
+mode = 0o755
+uid = 0
+gid = 0

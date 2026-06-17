@@ -1,0 +1,23 @@
+[package]
+name = "wget"
+version = "1.21.4"
+summary = "Network file retriever."
+license = "GPL-3.0-or-later"
+scope = "target"
+provides = []
+depends = ["virtual:ssl"]
+
+[source]
+kind = "archive"
+url = "https://ftp.gnu.org/gnu/wget/wget-1.21.4.tar.gz"
+sha256 = "81542f5cefb8faacc39bbbc6c82ded80e3e4a88505ae72ea51df27525bcde04c"
+
+# Cross-build is intentionally NOT wired with explicit phases yet: wget's
+# autotools configure finds HOST zlib/pcre2/idn2/nettle headers and enables
+# them, but the aarch64 sysroot lacks the matching -dev headers, so the build
+# fails. Resolving this needs those optional deps built as lightroot packages
+# (-> staging) and consumed via install_staging -- a real multi-package
+# milestone, tracked as follow-up. The `autotools` backend default documents
+# the intended lifecycle once the deps are available.
+[build]
+backend = "autotools"

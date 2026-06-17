@@ -1,0 +1,16 @@
+[package]
+name = "busybox"
+version = "1.36.1"
+summary = "Small Unix utilities in a single binary."
+license = "GPL-2.0-only"
+scope = "target"
+provides = ["virtual:base-utils", "virtual:shell", "virtual:init"]
+depends = []
+
+[source]
+kind = "archive"
+url = "https://busybox.net/downloads/busybox-1.36.1.tar.bz2"
+sha256 = "5a86b2f4f7c1c4a2f3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6"
+
+[build]
+backend = "make-kconfig"

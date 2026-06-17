@@ -1,0 +1,22 @@
+# build artifacts
+build/
+out/
+cmake-build-*/
+
+# CPM caches (use CPM_SOURCE_CACHE for shared/org caching)
+.cpm-cache/
+cpm-cache/
+
+# compile commands / IDE
+compile_commands.json
+.cache/
+.vscode/
+
+# object files
+*.o
+*.obj
+*.a
+*.so
+
+# OS cruft
+.DS_Store

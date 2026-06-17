@@ -1,0 +1,23 @@
+# Default LightRoot project config. Demonstrates provider resolution:
+# selecting `wget` pulls in `virtual:ssl`, which is explicitly bound to openssl.
+selected = ["wget", "busybox"]
+profile = "minimal"
+output_dir = "out"
+
+[toolchain]
+kind = "external"
+prefix = "aarch64-linux-gnu-"
+path = "/usr/bin"
+sysroot = "/usr/aarch64-linux-gnu"
+target = "aarch64-linux-gnu"
+
+[providers]
+"virtual:ssl" = "openssl"
+
+# Rootfs assembly. A built-in minimal device table (/dev/null, /dev/console,
+# /tmp 1777, ...) is applied by default under fakeroot, so the output is
+# hardware-correct with zero configuration. Point `device_table` at a custom
+# file to override or add nodes (same-path-wins over the built-in defaults).
+[rootfs]
+image_formats = ["tar", "cpio", "ext4"]
+# device_table = "devices.toml"

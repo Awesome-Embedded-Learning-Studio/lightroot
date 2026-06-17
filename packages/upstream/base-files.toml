@@ -1,0 +1,18 @@
+[package]
+name = "base-files"
+version = "1.0.0"
+summary = "Minimal rootfs skeleton: init, /etc, mountpoints."
+license = "MIT"
+scope = "target"
+provides = ["virtual:base-files"]
+depends = []
+
+[source]
+kind = "local"
+url = "base-files-src"
+
+[build]
+backend = "script"
+
+[build.install_target]
+run = ["sh install.sh"]

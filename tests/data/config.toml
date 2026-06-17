@@ -1,0 +1,15 @@
+# Top-level scalar/array keys must precede any [table] header in TOML.
+profile = "minimal"
+selected = ["busybox", "openssl"]
+output_dir = "out"
+
+[toolchain]
+kind = "external"
+prefix = "aarch64-linux-gnu-"
+path = "/usr/bin"
+sysroot = "/usr/aarch64-linux-gnu"
+target = "aarch64-linux-gnu"
+
+[providers]
+"virtual:base-utils" = "busybox"
+"virtual:ssl" = "openssl"

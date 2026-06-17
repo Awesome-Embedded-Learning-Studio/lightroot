@@ -1,0 +1,83 @@
+# .clang-format — lightroot formatting rules.
+# Ported from the CFDesktop LLVM baseline. clangd reads this automatically;
+# run `clang-format -i` to apply. Aligns with AGENT.md "Code Style".
+
+# Base style: LLVM (clean, modern).
+BasedOnStyle: LLVM
+
+# Indentation.
+IndentWidth: 4
+UseTab: Never
+ColumnLimit: 100
+
+# Braces: attached ({ on the statement line).
+BreakBeforeBraces: Attach
+
+# Pointer/reference alignment: left (int* a).
+PointerAlignment: Left
+DerivePointerAlignment: false
+
+# Return type and function name on the same line.
+AlwaysBreakAfterReturnType: None
+AlwaysBreakTemplateDeclarations: No
+
+# Preprocessor directive indentation: after the hash.
+IndentPPDirectives: AfterHash
+
+# Binary/ternary operator wrapping.
+BreakBeforeBinaryOperators: None
+BreakBeforeTernaryOperators: true
+
+# No alignment of consecutive assignments/declarations.
+AlignConsecutiveAssignments: false
+AlignConsecutiveDeclarations: false
+
+# Spaces.
+SpaceAfterCStyleCast: false
+SpaceAfterLogicalNot: false
+SpaceAfterTemplateKeyword: true
+SpaceBeforeParens: ControlStatements
+SpaceInEmptyParentheses: false
+SpacesInParentheses: false
+SpacesInSquareBrackets: false
+SpacesInContainerLiterals: false
+SpaceBeforeAssignmentOperators: true
+SpaceBeforeCpp11BracedList: false
+
+# Alignment.
+AlignAfterOpenBracket: Align
+AlignEscapedNewlines: Left
+AlignOperands: true
+AlignTrailingComments: true
+
+# Allow arguments/parameters on the next line.
+AllowAllArgumentsOnNextLine: true
+AllowAllConstructorInitializersOnNextLine: true
+AllowAllParametersOfDeclarationOnNextLine: true
+
+# Short forms.
+AllowShortBlocksOnASingleLine: Never
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+
+# Comments.
+ReflowComments: true
+
+# Empty lines and namespaces.
+MaxEmptyLinesToKeep: 1
+NamespaceIndentation: None
+
+# Access modifiers and case labels.
+IndentAccessModifiers: false
+IndentCaseLabels: true
+
+# Line endings and language.
+LineEnding: LF
+Language: Cpp
+Standard: c++20
+
+# Include sorting.
+SortIncludes: CaseInsensitive
+IncludeBlocks: Preserve
