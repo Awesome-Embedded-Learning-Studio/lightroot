@@ -306,7 +306,7 @@ int main(int argc, char** argv) {
     build_cmd->add_option("--config,-c", config_path, "Project config file")->capture_default_str();
     build_cmd
         ->add_option("--image-format,-f", build_image_formats,
-                     "Image formats to produce (tar|cpio|ext4); overrides [rootfs].image_formats")
+                     "Image formats to produce (tar|cpio|ext4|sdcard); overrides [rootfs].image_formats")
         ->expected(0, -1);
     build_cmd->add_option("--device-table", build_device_table,
                           "Device-table TOML file; overrides [rootfs].device_table");

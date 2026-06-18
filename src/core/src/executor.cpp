@@ -1,5 +1,6 @@
 #include <lightroot/executor.h>
 
+#include <lightroot/backend.h>
 #include <lightroot/exec.h>
 
 #include <cstdio>
@@ -172,9 +173,9 @@ std::string patchCommand(const Package& p) {
 }
 
 /// A rootfs image format the executor can produce.
-enum class ImageFormat { Tar, Cpio, Ext4 };
+enum class ImageFormat { Tar, Cpio, Ext4, Sdcard };
 
-/// Parse an image-format name from config ("tar" | "cpio" | "ext4").
+/// Parse an image-format name from config ("tar" | "cpio" | "ext4" | "sdcard").
 std::optional<ImageFormat> parseImageFormat(std::string_view s) {
     if (s == "tar")
         return ImageFormat::Tar;
@@ -182,6 +183,8 @@ std::optional<ImageFormat> parseImageFormat(std::string_view s) {
         return ImageFormat::Cpio;
     if (s == "ext4")
         return ImageFormat::Ext4;
+    if (s == "sdcard")
+        return ImageFormat::Sdcard;
     return std::nullopt;
 }
 
@@ -238,7 +241,17 @@ std::string buildAssembleScript(const std::filesystem::path& target,
         }
     }
 
-    // 3. Images.
+    // 3. If a kernel was built (out/Image), drop it at /boot/Image so every image
+    //    format carries it — most importantly the sdcard image, which is meant to
+    //    be a self-contained flashable disk (bootloader loads /boot/Image).
+    {
+        const auto kernel = root / "Image";
+        s += "if [ -f " + shellQuote(kernel.string()) + " ]; then mkdir -p " +
+             shellQuote((target / "boot").string()) + "; cp " + shellQuote(kernel.string()) + " " +
+             shellQuote((target / "boot" / "Image").string()) + "; fi\n";
+    }
+
+    // 4. Images.
     if (formats.count(ImageFormat::Tar)) {
         s += "tar --owner=0 --group=0 -czf " + shellQuote((root / "rootfs.tar.gz").string()) +
              " -C " + shellQuote(target.string()) + " .\n";
@@ -271,6 +284,26 @@ std::string buildAssembleScript(const std::filesystem::path& target,
         s += "    echo ok > " + shellQuote(status) + "\n";
         s += "  else echo fail > " + shellQuote(status) + "; fi\n";
         s += "fi\n";
+    }
+    if (formats.count(ImageFormat::Sdcard) && !degraded) {
+        const auto img = (root / "sdcard.img").string();
+        const auto status = (root / "logs" / "sdcard.status").string();
+        // A flashable disk image: an MBR partition table + a single ext4
+        // partition populated from the rootfs (with the kernel at /boot/Image).
+        // 1 MiB gap before sector 2048 (partition alignment). mkfs.ext4 -E offset
+        // formats the partition in place; sfdisk writes the table (no root needed).
+        s += "__lr_mksdcard() {\n";
+        s += "  __sz=$(du -s --block-size=1K \"$1\" | awk '{print $1+0}')\n";
+        s += "  __sz=$(( __sz * 11 / 10 + 8192 ))\n";
+        s += "  truncate -s $(( 2048 * 512 + __sz * 1024 )) \"$2\" || return 1\n";
+        s += "  printf 'label: dos\\nstart=2048,type=83\\n' | sfdisk \"$2\" >/dev/null 2>&1 || "
+             "return 1\n";
+        s += "  mkfs.ext4 -E offset=$(( 2048 * 512 )) -F -q -d \"$1\" \"$2\" >/dev/null 2>&1 || "
+             "return 1\n";
+        s += "}\n";
+        s += "if __lr_mksdcard " + shellQuote(target.string()) + " " + shellQuote(img) +
+             "; then echo ok > " + shellQuote(status) + "\n";
+        s += "else echo fail > " + shellQuote(status) + "; fi\n";
     }
     return s;
 }
@@ -350,46 +383,22 @@ void assembleRootfs(EventLog& el, const ExecutorConfig& cfg, const std::filesyst
             el.event("rootfs", "assemble", "", "warn", 0, "",
                      "ext4 image could not be produced; see " + log_path.string());
     }
+    if (formats.count(ImageFormat::Sdcard)) {
+        std::string marker = readFile(root / "logs" / "sdcard.status");
+        while (!marker.empty() && (marker.back() == '\n' || marker.back() == '\r' ||
+                                   marker.back() == ' ' || marker.back() == '\t'))
+            marker.pop_back();
+        const auto p = root / "sdcard.img";
+        std::error_code ec;
+        if (marker == "ok" && std::filesystem::exists(p, ec))
+            result.image_paths.push_back(p);
+        else
+            el.event("rootfs", "assemble", "", "warn", 0, "",
+                     "sdcard image could not be produced; see " + log_path.string());
+    }
 }
 
 } // namespace
-
-std::map<std::string, PhaseCommands> defaultPhases(std::string_view backend) {
-    std::map<std::string, PhaseCommands> out;
-    if (backend == "make-kconfig") {
-        // Verified against BusyBox 1.36.1 + aarch64-linux-gnu (2026-06): defconfig
-        // then a static link and disabling the `tc` applet (CBQ structs dropped
-        // from newer kernel headers) yields a clean static build.
-        PhaseCommands cfg;
-        cfg.run = {
-            "make ARCH=$LIGHTROOT_ARCH CROSS_COMPILE=$LIGHTROOT_CROSS_COMPILE defconfig",
-            "sed -i 's/# CONFIG_STATIC is not set/CONFIG_STATIC=y/' .config",
-            "sed -i 's/^CONFIG_TC=y/# CONFIG_TC is not set/' .config",
-            "sed -i 's/^CONFIG_FEATURE_TC_INGRESS=y/# CONFIG_FEATURE_TC_INGRESS is not set/' "
-            ".config",
-        };
-        out["configure"] = cfg;
-        PhaseCommands build;
-        build.run = {
-            "make ARCH=$LIGHTROOT_ARCH CROSS_COMPILE=$LIGHTROOT_CROSS_COMPILE -j$LIGHTROOT_JOBS"};
-        out["build"] = build;
-        PhaseCommands inst;
-        inst.run = {"make ARCH=$LIGHTROOT_ARCH CROSS_COMPILE=$LIGHTROOT_CROSS_COMPILE "
-                    "CONFIG_PREFIX=$LIGHTROOT_DESTDIR install"};
-        out["install_target"] = inst;
-    } else if (backend == "make" || backend == "autotools") {
-        PhaseCommands cfg;
-        cfg.run = {"./configure --host=$LIGHTROOT_TARGET --prefix=/usr"};
-        out["configure"] = cfg;
-        PhaseCommands build;
-        build.run = {"make -j$LIGHTROOT_JOBS"};
-        out["build"] = build;
-        PhaseCommands inst;
-        inst.run = {"make DESTDIR=$LIGHTROOT_DESTDIR install"};
-        out["install_target"] = inst;
-    }
-    return out;
-}
 
 ExecutorResult executePlan(const PackageRegistry& reg, const BuildPlan& plan,
                            const ExecutorConfig& cfg) {
@@ -470,6 +479,29 @@ ExecutorResult executePlan(const PackageRegistry& reg, const BuildPlan& plan,
             const auto phases = p->build->phases.empty() && !p->build->backend.empty()
                                     ? defaultPhases(p->build->backend)
                                     : p->build->phases;
+
+            // Backend setup: generate any toolchain/cross files into the workdir
+            // and expose their paths via env vars (e.g. $LIGHTROOT_CMAKE_TOOLCHAIN),
+            // merged onto the manifest's phase env. Generated regardless of whether
+            // the manifest overrides the default phases, so custom commands can
+            // still reference them.
+            auto phase_env = p->build->env;
+            // Expose staging so a package can consume already-built dependencies
+            // (e.g. autotools `--with-zlib=$LIGHTROOT_STAGING`); backends that embed
+            // it in a generated file (cmake/meson) also get it here for ad-hoc use.
+            phase_env["LIGHTROOT_STAGING"] = staging.string();
+            for (const auto& f : backendFiles(p->build->backend, cfg.toolchain, staging)) {
+                const auto fpath = workdir / f.filename;
+                std::ofstream of(fpath);
+                if (!of) {
+                    el.event(pkg, "backend", "", "fail", 0, "", "cannot write " + f.filename);
+                    ok = false;
+                    break;
+                }
+                of << f.content;
+                phase_env[f.env_var] = fpath.string();
+            }
+
             for (auto phase : PHASES) {
                 // Resolve this phase's command: an explicit `[build.<phase>].run`
                 // wins; for `patch` only, fall back to synthesizing `patch -p1`
@@ -484,7 +516,7 @@ ExecutorResult executePlan(const PackageRegistry& reg, const BuildPlan& plan,
                 if (cmd.empty())
                     continue;
                 const auto env = crossEnv(cfg.toolchain, jobs, destDirFor(phase, staging, target),
-                                          root, p->build->env);
+                                          root, phase_env);
                 ok = runShellPhase(el, pkg, std::string(phase), cmd, workdir,
                                    pkg_logs / (std::string(phase) + ".log"), env);
                 if (!ok)

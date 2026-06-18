@@ -21,10 +21,10 @@
 #pragma once
 
 #include <filesystem>
-#include <map>
 #include <string>
 #include <vector>
 
+#include <lightroot/backend.h>
 #include <lightroot/config.h>
 #include <lightroot/device_table.h>
 #include <lightroot/manifest.h>
@@ -81,26 +81,6 @@ struct ExecutorResult {
      */
     [[nodiscard]] bool ok() const { return failed.empty(); }
 };
-
-/**
- * @brief  Default lifecycle phase commands for a well-known backend.
- *
- * @details Used when a manifest declares a `backend` but no explicit per-phase
- *          `run` commands. Known backends: "make-kconfig" (BusyBox-style),
- *          "make", "autotools". Returns an empty map for an unknown backend,
- *          in which case the package only goes through fetch/verify/extract.
- *
- * @param[in] backend Backend name from the manifest.
- *
- * @return     Phase key -> commands for the backend's canonical lifecycle.
- *
- * @throws     None.
- * @note       None.
- * @warning    None.
- * @since      0.1
- * @ingroup    lightroot_executor
- */
-std::map<std::string, PhaseCommands> defaultPhases(std::string_view backend);
 
 /**
  * @brief  Execute every step of a resolved plan through the lifecycle.

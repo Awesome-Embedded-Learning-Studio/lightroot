@@ -10,6 +10,7 @@ add_library(lightroot_core STATIC
   src/exec.cpp
   src/doctor.cpp
   src/executor.cpp
+  src/backend.cpp
   src/lockfile.cpp)
 
 target_include_directories(lightroot_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

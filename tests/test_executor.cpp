@@ -375,6 +375,34 @@ TEST(Executor, AssembleProducesRequestedFormats) {
     EXPECT_GE(res.image_paths.size(), 2u);
 }
 
+TEST(Executor, AssembleProducesSdcardImage) {
+    if (!hasFakeroot())
+        GTEST_SKIP() << "fakeroot not on PATH";
+
+    TempDir work;
+    const auto out = work.path() / "out";
+    const auto res = buildHelloPlan(out, {"sdcard"});
+    ASSERT_TRUE(res.ok()) << (res.failed.empty() ? "" : res.failed[0]);
+    const auto img = out / "sdcard.img";
+    ASSERT_TRUE(fs::exists(img)) << "sdcard.img not produced";
+
+    // Structurally verify by raw bytes: MBR boot signature + a Linux (0x83)
+    // partition entry, and an ext4 superblock magic (0xEF53) at the partition
+    // offset (1 MiB, sector 2048) + 0x438.
+    std::ifstream f(img, std::ios::binary);
+    ASSERT_TRUE(f);
+    const auto byteAt = [&](long off) -> int {
+        f.clear();
+        f.seekg(off);
+        return f.get();
+    };
+    EXPECT_EQ(byteAt(510), 0x55); // MBR boot signature
+    EXPECT_EQ(byteAt(511), 0xAA);
+    EXPECT_EQ(byteAt(450), 0x83);               // partition 1 type = Linux
+    EXPECT_EQ(byteAt(0x100000L + 0x438), 0x53); // ext4 magic 0xEF53 (little-endian)
+    EXPECT_EQ(byteAt(0x100000L + 0x439), 0xEF);
+}
+
 TEST(Executor, PatchPhaseAppliesDeclaredPatches) {
     TempDir work;
     const auto manifest = work.path() / "pkg.toml"; // origin for relative patch resolution
@@ -489,4 +517,78 @@ TEST(Executor, ExposesOutputRootViaLightrootOut) {
     ASSERT_TRUE(res.ok());
     EXPECT_EQ(readFile(out / "marker.txt"), "built\n");
     EXPECT_TRUE(fs::exists(out / "target" / "usr" / "bin" / "hello"));
+}
+
+TEST(Executor, CmakeBackendBuildsAarch64Binary) {
+    // The cmake backend: executor generates a toolchain file, defaultPhases drives
+    // cmake/make/install, and the result is a cross-compiled aarch64 binary.
+    std::string cap;
+    if (!runCapture({"cmake", "--version"}, {}, cap).ok())
+        GTEST_SKIP() << "cmake not on PATH";
+    if (!runCapture({"aarch64-linux-gnu-gcc", "--version"}, {}, cap).ok())
+        GTEST_SKIP() << "aarch64-linux-gnu-gcc not on PATH";
+
+    TempDir work;
+    const auto src = work.path() / "src";
+    fs::create_directories(src);
+    writeFile(src / "hello.c", "int main(void){return 0;}\n");
+    writeFile(src / "CMakeLists.txt",
+              "cmake_minimum_required(VERSION 3.16)\nproject(hello C)\n"
+              "add_executable(hello hello.c)\ninstall(TARGETS hello RUNTIME DESTINATION bin)\n");
+
+    Package p = makeLocalPackage("hello", src);
+    BuildInfo bi;
+    bi.backend = "cmake";
+    p.build = bi;
+
+    PackageRegistry reg;
+    reg.add(std::move(p));
+    auto cfg = basicConfig(work.path() / "out");
+    cfg.toolchain.sysroot = "/usr/aarch64-linux-gnu";
+    const auto res = executePlan(reg, singleStepPlan("hello"), cfg);
+
+    ASSERT_TRUE(res.ok()) << (res.failed.empty() ? "" : res.failed[0]);
+    const auto bin = work.path() / "out" / "target" / "usr" / "bin" / "hello";
+    ASSERT_TRUE(fs::exists(bin)) << "installed cmake binary missing";
+    std::string fc;
+    runCapture({"file", bin.string()}, {}, fc);
+    EXPECT_NE(fc.find("aarch64"), std::string::npos) << "not an aarch64 binary: " << fc;
+    // The generated toolchain file should be sitting in the workdir.
+    EXPECT_TRUE(fs::exists(work.path() / "out" / "build" / "hello" / "lightroot-toolchain.cmake"));
+}
+
+TEST(Executor, MesonBackendBuildsAarch64Binary) {
+    // The meson backend: executor generates a cross-file, defaultPhases drives
+    // meson setup/compile/install, and the result is a cross-compiled binary.
+    std::string cap;
+    if (!runCapture({"meson", "--version"}, {}, cap).ok())
+        GTEST_SKIP() << "meson not on PATH";
+    if (!runCapture({"aarch64-linux-gnu-gcc", "--version"}, {}, cap).ok())
+        GTEST_SKIP() << "aarch64-linux-gnu-gcc not on PATH";
+
+    TempDir work;
+    const auto src = work.path() / "src";
+    fs::create_directories(src);
+    writeFile(src / "main.c", "int main(void){return 0;}\n");
+    writeFile(src / "meson.build", "project('hello', 'c')\n"
+                                   "executable('hello', 'main.c', install: true)\n");
+
+    Package p = makeLocalPackage("hello", src);
+    BuildInfo bi;
+    bi.backend = "meson";
+    p.build = bi;
+
+    PackageRegistry reg;
+    reg.add(std::move(p));
+    auto cfg = basicConfig(work.path() / "out");
+    cfg.toolchain.sysroot = "/usr/aarch64-linux-gnu";
+    const auto res = executePlan(reg, singleStepPlan("hello"), cfg);
+
+    ASSERT_TRUE(res.ok()) << (res.failed.empty() ? "" : res.failed[0]);
+    const auto bin = work.path() / "out" / "target" / "usr" / "bin" / "hello";
+    ASSERT_TRUE(fs::exists(bin)) << "installed meson binary missing";
+    std::string fc;
+    runCapture({"file", bin.string()}, {}, fc);
+    EXPECT_NE(fc.find("aarch64"), std::string::npos) << "not an aarch64 binary: " << fc;
+    EXPECT_TRUE(fs::exists(work.path() / "out" / "build" / "hello" / "lightroot-meson-cross.txt"));
 }
