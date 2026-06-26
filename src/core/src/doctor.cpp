@@ -17,7 +17,8 @@ namespace lightroot {
 namespace {
 
 /// ELF machine type for 64-bit AArch64 (e_machine).
-constexpr unsigned EM_AARCH64 = 0xB7;
+constexpr unsigned EM_ARM = 0x28;     ///< 32-bit ARM (e_machine).
+constexpr unsigned EM_AARCH64 = 0xB7; ///< 64-bit ARM (e_machine).
 
 /// Join `parts` with `sep`.
 std::string join(const std::vector<std::string>& parts, std::string_view sep) {
@@ -101,22 +102,39 @@ std::string failDetail(std::string_view what, const CommandResult& res, const st
     return d;
 }
 
-/// Set status/detail from the ELF machine type of `elf`; Pass with `ok_detail`.
-void applyArchVerdict(CheckResult& r, const std::filesystem::path& elf,
+/// Expected ELF e_machine for a target triple (arm* -> EM_ARM, aarch64* ->
+/// EM_AARCH64). Returns 0 for an unknown family, in which case applyArchVerdict
+/// accepts any valid ELF (the smoke check stays useful without an arch guess).
+unsigned expectedElfMachine(std::string_view target) {
+    if (target.rfind("aarch64", 0) == 0)
+        return EM_AARCH64;
+    if (target.rfind("arm", 0) == 0)
+        return EM_ARM;
+    return 0;
+}
+
+/// Set status/detail from the ELF machine type of `elf`; Pass with @p ok_detail
+/// when it matches @p expected (or when @p expected is 0 / unknown). The host
+/// toolchain's own target triple drives @p expected, so the smoke check is
+/// arch-agnostic rather than hard-wired to aarch64.
+void applyArchVerdict(CheckResult& r, const std::filesystem::path& elf, unsigned expected,
                       std::string_view ok_detail) {
     const auto machine = elfMachine(readFile(elf));
     if (!machine) {
         r.status = CheckStatus::Warn;
         r.detail = "compiled, but output is not a valid ELF";
-    } else if (*machine == EM_AARCH64) {
+        return;
+    }
+    if (expected == 0 || *machine == expected) {
         r.status = CheckStatus::Pass;
         r.detail = std::string(ok_detail);
-    } else {
-        r.status = CheckStatus::Warn;
-        char buf[16];
-        std::snprintf(buf, sizeof(buf), "0x%04x", *machine);
-        r.detail = std::string{"compiled, but e_machine="} + buf + " (not aarch64)";
+        return;
     }
+    r.status = CheckStatus::Warn;
+    char got[16], want[16];
+    std::snprintf(got, sizeof(got), "0x%04x", *machine);
+    std::snprintf(want, sizeof(want), "0x%04x", expected);
+    r.detail = std::string{"compiled, but e_machine="} + got + " (target expects " + want + ")";
 }
 
 } // namespace
@@ -277,7 +295,7 @@ CheckResult checkCompileSmoke(const ToolchainConfig& tc) {
         return r;
     }
 
-    applyArchVerdict(r, out, "aarch64 static binary produced");
+    applyArchVerdict(r, out, expectedElfMachine(tc.target), "static binary produced");
     return r;
 }
 
@@ -311,7 +329,7 @@ CheckResult checkCppSmoke(const ToolchainConfig& tc) {
         return r;
     }
 
-    applyArchVerdict(r, out, "aarch64 static C++ binary produced");
+    applyArchVerdict(r, out, expectedElfMachine(tc.target), "static C++ binary produced");
     return r;
 }
 
