@@ -403,6 +403,76 @@ TEST(Executor, AssembleProducesSdcardImage) {
     EXPECT_EQ(byteAt(0x100000L + 0x439), 0xEF);
 }
 
+TEST(Executor, AssembleProducesConfiguredDiskImage) {
+    if (!hasFakeroot())
+        GTEST_SKIP() << "fakeroot not on PATH";
+
+    TempDir work;
+    const auto out = work.path() / "out";
+    fs::create_directories(out);
+    // Artifacts the layout pulls from $LIGHTROOT_OUT (= out). Content is arbitrary;
+    // the payload marker lets us confirm the dd landed at the declared offset.
+    writeFile(out / "bootloader.bin", "IMXUBOOT!");
+    writeFile(out / "kernel.img", std::string(64, 'K'));
+
+    // A partitioned image described ENTIRELY by data — the executor's renderer is
+    // board-agnostic. A 1 KiB payload, a 4 MiB boot partition @ 4 MiB holding one
+    // sourced + one inline file, then a rootfs partition sized from the rootfs.
+    PartitionedImage lay;
+    lay.output = "disk.img";
+    lay.payload = ImagePayload{"bootloader.bin", 1};
+    ImagePartition boot;
+    boot.start_mib = 4;
+    boot.size = "4";
+    boot.bootable = true;
+    boot.label = "boot";
+    boot.files.push_back({"", "kernel.img", ""}); // src -> dst defaults to basename
+    boot.files.push_back({"boot.cmd", "", "boot me"}); // inline body
+    lay.partitions.push_back(boot);
+    ImagePartition root;
+    root.start_mib = 8;
+    root.size = "auto";
+    root.rootfs = true;
+    root.label = "rootfs";
+    lay.partitions.push_back(root);
+
+    // A hello package so the assembled target/ rootfs is non-empty.
+    TempDir srcdir;
+    writeFile(srcdir.path() / "hello", "hi");
+    writeFile(srcdir.path() / "Makefile", "install:\n\tinstall -D hello $(DESTDIR)/usr/bin/hello\n");
+    Package p = makeLocalPackage("hello", srcdir.path());
+    BuildInfo bi;
+    bi.backend = "script";
+    bi.phases["install_target"].run = {"make install"};
+    p.build = bi;
+    PackageRegistry reg;
+    reg.add(std::move(p));
+    auto cfg = basicConfig(out);
+    cfg.image = lay;
+    const auto res = executePlan(reg, singleStepPlan("hello"), cfg);
+    ASSERT_TRUE(res.ok()) << (res.failed.empty() ? "" : res.failed[0]);
+
+    const auto img = out / "disk.img";
+    ASSERT_TRUE(fs::exists(img)) << "disk.img not produced";
+
+    // MBR signature, payload at its declared offset, and both partitions at their
+    // data-declared starts (4 MiB -> 8192 sectors, 8 MiB -> 16384 sectors).
+    std::string cap;
+    ASSERT_TRUE(runCapture({"sfdisk", "-d", img.string()}, {}, cap).ok());
+    EXPECT_NE(cap.find("8192"), std::string::npos);
+    EXPECT_NE(cap.find("16384"), std::string::npos);
+    std::ifstream f(img, std::ios::binary);
+    ASSERT_TRUE(f);
+    f.seekg(510);
+    EXPECT_EQ(f.get(), 0x55);
+    EXPECT_EQ(f.get(), 0xAA);
+    f.clear();
+    f.seekg(1024);
+    std::string head(static_cast<std::size_t>(9), '\0');
+    f.read(&head[0], 9);
+    EXPECT_EQ(head, "IMXUBOOT!");
+}
+
 TEST(Executor, PatchPhaseAppliesDeclaredPatches) {
     TempDir work;
     const auto manifest = work.path() / "pkg.toml"; // origin for relative patch resolution

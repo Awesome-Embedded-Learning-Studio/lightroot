@@ -50,6 +50,10 @@ struct ExecutorConfig {
 
     /// Image formats to produce ("tar", "cpio", "ext4"). Default ["tar"].
     std::vector<std::string> image_formats{"tar"};
+
+    /// Optional partitioned disk image layout (the [image] table). When set, the
+    /// assemble phase renders a flashable image from this data description.
+    std::optional<PartitionedImage> image;
 };
 
 /**

@@ -67,6 +67,49 @@ std::optional<ProjectConfig> parseConfigText(std::string_view text,
             cfg.device_table_file = *f;
     }
 
+    if (auto* img = tbl["image"].as_table()) {
+        PartitionedImage pimg;
+        pimg.output = (*img)["output"].value_or(std::string{});
+        if (auto* pl = (*img)["payload"].as_table()) {
+            ImagePayload payload;
+            payload.file = (*pl)["file"].value_or(std::string{});
+            payload.offset_kib = static_cast<unsigned>((*pl)["offset_kib"].value_or(0));
+            if (!payload.file.empty())
+                pimg.payload = payload;
+        }
+        if (auto* parts = (*img)["partition"].as_array()) {
+            for (const auto& el : *parts) {
+                const auto* pt = el.as_table();
+                if (!pt)
+                    continue;
+                ImagePartition part;
+                part.start_mib = static_cast<unsigned>((*pt)["start_mib"].value_or(0));
+                part.size = (*pt)["size"].value_or(std::string{"rest"});
+                part.type = static_cast<unsigned>((*pt)["type"].value_or(0x83));
+                part.bootable = (*pt)["bootable"].value_or(false);
+                part.rootfs = (*pt)["rootfs"].value_or(false);
+                part.fs = (*pt)["fs"].value_or(std::string{"ext4"});
+                part.label = (*pt)["label"].value_or(std::string{});
+                if (const auto* files = (*pt)["files"].as_array()) {
+                    for (const auto& fe : *files) {
+                        const auto* ft = fe.as_table();
+                        if (!ft)
+                            continue;
+                        ImageFile f;
+                        f.dst = (*ft)["dst"].value_or(std::string{});
+                        f.src = (*ft)["src"].value_or(std::string{});
+                        f.inline_text = (*ft)["inline"].value_or(std::string{});
+                        if (!f.src.empty() || !f.inline_text.empty())
+                            part.files.push_back(std::move(f));
+                    }
+                }
+                pimg.partitions.push_back(std::move(part));
+            }
+        }
+        if (!pimg.output.empty())
+            cfg.image = pimg;
+    }
+
     return cfg;
 }
 

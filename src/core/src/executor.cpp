@@ -203,12 +203,118 @@ std::string underRoot(std::string_view path) {
     return s;
 }
 
+/// Render the shell block that builds a data-described partitioned image (the
+/// [image] table). Board-agnostic: every offset, partition, filesystem and boot
+/// file comes from @p img; this code knows nothing about any specific board. The
+/// block writes a `partimg-<output>.status` marker so assembleRootfs can collect
+/// the artifact. Requires sfdisk + mkfs.ext4 (no root); skipped under fakeroot
+/// absence because the rootfs must be hardware-correct first.
+std::string buildPartitionedImageScript(const std::filesystem::path& target,
+                                         const std::filesystem::path& root,
+                                         const PartitionedImage& img) {
+    std::string s;
+    const auto out = (root / img.output).string();
+    const auto status = (root / "logs" / ("partimg-" + img.output + ".status")).string();
+    s += "# Partitioned image rendered from the [image] table (layout is data).\n";
+    s += "__lr_mkpartimg() {\n";
+    s += "  __t=" + shellQuote(target.string()) + "\n";
+    s += "  __o=" + shellQuote(out) + "\n";
+    s += "  __a=" + shellQuote(root.string()) + "\n";
+    // Per-partition size in MiB, then sectors. "auto" sizes a rootfs partition
+    // from the assembled rootfs usage + headroom; anything else is a decimal MiB.
+    for (std::size_t i = 0; i < img.partitions.size(); ++i) {
+        const auto& p = img.partitions[i];
+        const auto iv = std::to_string(i);
+        if (p.rootfs && p.size == "auto") {
+            s += "  __PSZ_" + iv + "=$( ( du -s --block-size=1M \"$__t\" | awk '{print $1+0}' ) )\n";
+            s += "  __PSZ_" + iv + "=$(( __PSZ_" + iv + " * 3 / 2 + 64 ))\n";
+            s += "  [ \"$__PSZ_" + iv + "\" -lt 64 ] && __PSZ_" + iv + "=64\n";
+        } else {
+            unsigned mib = 64;
+            try {
+                mib = static_cast<unsigned>(std::stoul(p.size));
+            } catch (...) {
+            }
+            s += "  __PSZ_" + iv + "=" + std::to_string(mib) + "\n";
+        }
+        s += "  __PSEC_" + iv + "=$(( __PSZ_" + iv + " * 2048 ))\n";
+    }
+    // Image size = the furthest partition end + 8 MiB slack.
+    s += "  __end=0\n";
+    for (std::size_t i = 0; i < img.partitions.size(); ++i) {
+        const auto iv = std::to_string(i);
+        const unsigned start = img.partitions[i].start_mib;
+        s += "  __end=$(( __PSZ_" + iv + " + " + std::to_string(start) + " > __end ? __PSZ_" + iv +
+             " + " + std::to_string(start) + " : __end ))\n";
+    }
+    s += "  truncate -s \"$(( __end + 8 ))M\" \"$__o\" || return 1\n";
+    // Optional pre-partition payload (e.g. bootloader at a fixed offset).
+    if (img.payload && !img.payload->file.empty()) {
+        s += "  dd if=\"$__a/" + img.payload->file + "\" of=\"$__o\" bs=1K seek=" +
+             std::to_string(img.payload->offset_kib) + " conv=notrunc status=none || return 1\n";
+    }
+    // MBR partition table. Starts are compile-time constants; sizes are the
+    // computed sector counts, expanded by the shell when building $__pt.
+    s += "  __pt=\"label: dos\"\n";
+    for (std::size_t i = 0; i < img.partitions.size(); ++i) {
+        const auto& p = img.partitions[i];
+        char typehex[8];
+        std::snprintf(typehex, sizeof(typehex), "%x", p.type);
+        s += "  __pt=\"$__pt\nstart=" + std::to_string(p.start_mib * 2048) + ",size=$__PSEC_" +
+             std::to_string(i) + ",type=" + typehex + (p.bootable ? ",bootable" : "") + "\"\n";
+    }
+    s += "  printf '%s\\n' \"$__pt\" | sfdisk --quiet --no-reread \"$__o\" >/dev/null 2>&1 || return 1\n";
+    // Per-partition filesystem, built from either the rootfs tree or declared
+    // files, then dd'd into its slot.
+    for (std::size_t i = 0; i < img.partitions.size(); ++i) {
+        const auto& p = img.partitions[i];
+        const auto iv = std::to_string(i);
+        const std::string start_sec = std::to_string(p.start_mib * 2048);
+        if (p.rootfs) {
+            s += "  __cd_" + iv + "=\"$__t\"\n";
+        } else {
+            s += "  __cd_" + iv + "=$(mktemp -d)\n";
+            for (std::size_t j = 0; j < p.files.size(); ++j) {
+                const auto& f = p.files[j];
+                const std::string dst = f.dst.empty() ? f.src : f.dst;
+                if (dst.empty())
+                    continue;
+                if (!f.src.empty()) {
+                    s += "  cp \"$__a/" + f.src + "\" \"$__cd_" + iv + "/" + dst + "\"\n";
+                } else {
+                    const auto delim = "__LRF" + iv + "_" + std::to_string(j) + "__";
+                    s += "  cat > \"$__cd_" + iv + "/" + dst + "\" <<'" + delim + "'\n";
+                    s += f.inline_text;
+                    if (f.inline_text.empty() || f.inline_text.back() != '\n')
+                        s += "\n";
+                    s += delim + "\n";
+                }
+            }
+        }
+        const std::string label = p.label.empty() ? std::string{"root"} : p.label;
+        s += "  truncate -s \"${__PSZ_" + iv + "}M\" \"$__o.p" + iv + "\" || return 1\n";
+        s += "  mkfs.ext4 -F -q -d \"$__cd_" + iv + "\" -L " + label + " -m 0 \"$__o.p" + iv +
+             "\" >/dev/null 2>&1 || return 1\n";
+        s += "  dd if=\"$__o.p" + iv + "\" of=\"$__o\" bs=512 seek=" + start_sec +
+             " conv=notrunc status=none || return 1\n";
+        s += "  rm -f \"$__o.p" + iv + "\"\n";
+        if (!p.rootfs)
+            s += "  rm -rf \"$__cd_" + iv + "\"\n";
+    }
+    s += "  return 0\n";
+    s += "}\n";
+    s += "if __lr_mkpartimg; then echo ok > " + shellQuote(status) + "\n";
+    s += "else echo fail > " + shellQuote(status) + "; fi\n";
+    return s;
+}
+
 /// Generate the assemble shell script. Run under fakeroot when @p degraded is
 /// false (chown/mknod then succeed and are recorded); degraded mode skips them.
 /// All paths are absolute and shell-quoted, so target paths with spaces survive.
 std::string buildAssembleScript(const std::filesystem::path& target,
                                 const std::filesystem::path& root, const DeviceTable& table,
-                                const std::set<ImageFormat>& formats, bool degraded) {
+                                const std::set<ImageFormat>& formats, bool degraded,
+                                const std::optional<PartitionedImage>& image) {
     std::string s;
     s += "#!/bin/sh\n";
     s += "# Generated by LightRoot; assembles the rootfs. Run via: fakeroot /bin/sh <this>\n";
@@ -305,6 +411,8 @@ std::string buildAssembleScript(const std::filesystem::path& target,
              "; then echo ok > " + shellQuote(status) + "\n";
         s += "else echo fail > " + shellQuote(status) + "; fi\n";
     }
+    if (image && !degraded)
+        s += buildPartitionedImageScript(target, root, *image);
     return s;
 }
 
@@ -342,7 +450,7 @@ void assembleRootfs(EventLog& el, const ExecutorConfig& cfg, const std::filesyst
     const auto script_path = root / "logs" / "assemble.sh";
     {
         std::ofstream of(script_path);
-        of << buildAssembleScript(target, root, table, formats, !have_fakeroot);
+        of << buildAssembleScript(target, root, table, formats, !have_fakeroot, cfg.image);
     }
 
     // NOTE: the `--` separator is required. fakeroot is a shell wrapper that
@@ -396,6 +504,20 @@ void assembleRootfs(EventLog& el, const ExecutorConfig& cfg, const std::filesyst
             el.event("rootfs", "assemble", "", "warn", 0, "",
                      "sdcard image could not be produced; see " + log_path.string());
     }
+    if (cfg.image) {
+        std::string marker = readFile(root / "logs" / ("partimg-" + cfg.image->output + ".status"));
+        while (!marker.empty() && (marker.back() == '\n' || marker.back() == '\r' ||
+                                   marker.back() == ' ' || marker.back() == '\t'))
+            marker.pop_back();
+        const auto p = root / cfg.image->output;
+        std::error_code ec;
+        if (marker == "ok" && std::filesystem::exists(p, ec))
+            result.image_paths.push_back(p);
+        else
+            el.event("rootfs", "assemble", "", "warn", 0, "",
+                     "partitioned image '" + cfg.image->output +
+                         "' could not be produced; see " + log_path.string());
+    }
 }
 
 } // namespace
@@ -438,6 +560,13 @@ ExecutorResult executePlan(const PackageRegistry& reg, const BuildPlan& plan,
         // fetch / verify / extract
         if (p->source) {
             const auto& src = *p->source;
+            // Start from a clean workdir. A previous run may have left a patched/
+            // extracted tree behind (e.g. files a patch added), which would make a
+            // re-run's extract+patch fail with "already exists". Wipe + recreate so
+            // every build reproduces from pristine source.
+            std::error_code clean_ec;
+            std::filesystem::remove_all(workdir, clean_ec);
+            std::filesystem::create_directories(workdir, clean_ec);
             if (src.kind == "local") {
                 ok = copyLocalSource(el, pkg, resolveSourcePath(*p, src.url).string(), workdir,
                                      pkg_logs / "fetch.log");
