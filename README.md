@@ -26,9 +26,31 @@ ctest --test-dir build --output-on-failure
 ```sh
 ./build/src/cli/lightroot list            # index and list packages
 ./build/src/cli/lightroot list --root packages/upstream
-./build/src/cli/lightroot resolve         # (Stage 1 core resolver: pending)
-./build/src/cli/lightroot doctor          # (Stage 2)
+./build/src/cli/lightroot resolve         # resolve deps + providers into a build plan
+./build/src/cli/lightroot doctor          # check host + toolchain readiness
+./build/src/cli/lightroot build           # build the resolved plan into a rootfs image
 ```
+
+### i.MX6ULL build (U-Boot + Linux + rootfs + SD image)
+
+`lightroot-imx.toml` builds the i.MX6ULL artifacts from the sibling `imx-forge`
+source tree with the Arm GNU toolchain (`arm-none-linux-gnueabihf-`):
+
+```sh
+# 1. Generate source tarballs from imx-forge's git submodules (uboot-imx, linux-imx).
+./packages/company/make-sources.sh
+
+# 2. Doctor-check the Arm toolchain, then build U-Boot + Linux + BusyBox rootfs
+#    and assemble the bootable SD image at out-imx/imx6ull-aes-sd.img.
+./build/src/cli/lightroot doctor -c lightroot-imx.toml
+./build/src/cli/lightroot build  -c lightroot-imx.toml
+```
+
+The i.MX packages live under `packages/company/` (the overlay root scanned
+alongside `packages/upstream/`). The flashable SD image is described by an
+`[image]` table in `lightroot-imx.toml` (payload offset, partitions, boot files)
+— lightroot's image renderer is board-agnostic, so any board expresses its layout
+as data with no C++ changes.
 
 ## Status
 
