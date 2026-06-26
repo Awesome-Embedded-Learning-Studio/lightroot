@@ -1,7 +1,11 @@
 # build artifacts
 build/
 out/
+out-imx/
 cmake-build-*/
+
+# i.MX source tarballs (generated from imx-forge submodules by packages/company/make-sources.sh)
+packages/company/archives/
 
 # CPM caches (use CPM_SOURCE_CACHE for shared/org caching)
 .cpm-cache/

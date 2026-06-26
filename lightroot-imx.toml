@@ -1,0 +1,54 @@
+# LightRoot project config for the i.MX6ULL (arm32) build.
+#
+# Builds the target rootfs with the Arm GNU toolchain (arm-none-linux-gnueabihf).
+# Component packages uboot-imx / linux-imx live under packages/company/ and are
+# added to `selected` as those stages land; this config starts with the rootfs
+# (busybox + base-files). Output is kept separate from the generic aarch64 demo
+# (which uses lightroot.toml + out/).
+#
+# Run with:  ./build/src/cli/lightroot -c lightroot-imx.toml build
+profile = "imx6ull"
+selected = ["busybox", "base-files", "uboot-imx", "linux-imx"]
+output_dir = "out-imx"
+
+[toolchain]
+kind = "external"
+prefix = "arm-none-linux-gnueabihf-"
+path = "/opt/arm-gnu-toolchain/bin"
+sysroot = "/opt/arm-gnu-toolchain/arm-none-linux-gnueabihf/libc"
+target = "arm-none-linux-gnueabihf"
+
+[rootfs]
+image_formats = ["tar", "ext4"]
+
+# Flashable i.MX6ULL SD image. The board layout is pure DATA here — lightroot's
+# executor renderer is board-agnostic and knows nothing about i.MX. U-Boot at the
+# 1 KiB i.MX boot-ROM offset; a 64 MiB boot ext4 (zImage + dtb + boot.cmd) at
+# 16 MiB; rootfs ext4 from the assembled rootfs after it.
+[image]
+output = "imx6ull-aes-sd.img"
+
+[image.payload]
+file = "u-boot-dtb.imx"
+offset_kib = 1
+
+[[image.partition]]
+start_mib = 16
+size = "64"
+type = 0x83
+bootable = true
+fs = "ext4"
+label = "boot"
+files = [
+  { src = "zImage" },
+  { src = "imx6ull-aes.dtb" },
+  { dst = "boot.cmd", inline = "setenv bootargs console=ttymxc0,115200 root=/dev/mmcblk0p2 rootwait rw\next4load mmc 0:1 ${loadaddr} /zImage\next4load mmc 0:1 ${fdt_addr_r} /imx6ull-aes.dtb\nbootz ${loadaddr} - ${fdt_addr_r}" },
+]
+
+[[image.partition]]
+start_mib = 80
+size = "auto"
+type = 0x83
+fs = "ext4"
+label = "rootfs"
+rootfs = true
