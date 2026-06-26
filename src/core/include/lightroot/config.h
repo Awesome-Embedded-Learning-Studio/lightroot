@@ -42,6 +42,75 @@ struct ToolchainConfig {
 };
 
 /**
+ * @brief  One file written into a partition filesystem.
+ *
+ * @details Exactly one of @c src (an artifact exported to @c $LIGHTROOT_OUT, e.g.
+ *          "zImage") or @c inline_text (a generated file body, e.g. boot.cmd) is
+ *          set. The C++ executor treats both opaquely; it knows nothing about
+ *          what the file IS for any given board.
+ *
+ * @since      0.1
+ * @ingroup    lightroot_config
+ */
+struct ImageFile {
+    std::string dst;         ///< Destination path inside the partition; basename of src if empty.
+    std::string src;         ///< Artifact name in @c $LIGHTROOT_OUT; empty if inline_text.
+    std::string inline_text; ///< Literal file body; empty if src.
+};
+
+/**
+ * @brief  One partition in a data-described disk image.
+ *
+ * @details Board-agnostic: the executor renders any partition table / filesystem
+ *          layout described by a list of these. @c start_mib places the partition
+ *          (MiB); @c size is a decimal MiB count, @c "auto" (rootfs usage +
+ *          headroom, only for a @c rootfs partition), or @c "rest" (fill to the
+ *          end). A @c rootfs partition is filled from the assembled target tree;
+ *          any other is filled from @c files.
+ *
+ * @since      0.1
+ * @ingroup    lightroot_config
+ */
+struct ImagePartition {
+    unsigned start_mib = 0;        ///< Partition start offset in MiB.
+    std::string size = "rest";     ///< "<N>" MiB | "auto" | "rest".
+    unsigned type = 0x83;          ///< MBR partition type (rendered as hex).
+    bool bootable = false;         ///< Mark the partition bootable in the MBR.
+    bool rootfs = false;           ///< Fill from the assembled target rootfs tree.
+    std::string fs = "ext4";       ///< Filesystem (currently "ext4").
+    std::string label;             ///< Filesystem label.
+    std::vector<ImageFile> files;  ///< Files for non-rootfs partitions.
+};
+
+/**
+ * @brief  An optional pre-partition payload, e.g. a bootloader at a fixed offset.
+ *
+ * @since      0.1
+ * @ingroup    lightroot_config
+ */
+struct ImagePayload {
+    std::string file;       ///< Artifact name in @c $LIGHTROOT_OUT (e.g. a bootloader image).
+    unsigned offset_kib = 0; ///< Byte offset (KiB) within the image to write it.
+};
+
+/**
+ * @brief  A partitioned disk image fully described by config data.
+ *
+ * @details The executor renders this verbatim into a flashable image
+ *          (payload + MBR partition table + per-partition filesystems). It
+ *          contains NO board-specific knowledge — any board expresses its layout
+ *          as an [image] table in its project config.
+ *
+ * @since      0.1
+ * @ingroup    lightroot_config
+ */
+struct PartitionedImage {
+    std::string output;                   ///< Output filename (e.g. "sdcard.img").
+    std::optional<ImagePayload> payload;  ///< Optional pre-partition payload.
+    std::vector<ImagePartition> partitions; ///< Partitions, in table order.
+};
+
+/**
  * @brief  Parsed project configuration.
  *
  * @since      0.1
@@ -65,6 +134,10 @@ struct ProjectConfig {
     /// Optional device-table file (relative to the project config dir). When
     /// empty, the built-in default device table applies. @see device_table.h.
     std::filesystem::path device_table_file;
+
+    /// Optional partitioned disk image layout ([image] table). When set, the
+    /// assemble phase renders a flashable image from this data description.
+    std::optional<PartitionedImage> image;
 };
 
 /**

@@ -89,6 +89,7 @@ struct LoadedPlan {
     lightroot::ToolchainConfig toolchain;
     std::vector<std::string> image_formats{"tar"}; ///< From [rootfs].image_formats.
     std::filesystem::path device_table_file;       ///< From [rootfs].device_table.
+    std::optional<lightroot::PartitionedImage> image; ///< From [image].
     std::filesystem::path output_dir{"out"};       ///< From top-level output_dir.
     std::vector<std::string> selected;             ///< Root selections (lockfile context).
     std::map<std::string, std::string> providers;  ///< Provider bindings (lockfile context).
@@ -110,6 +111,7 @@ LoadedPlan loadAndResolve(const std::vector<std::string>& roots, const std::stri
         lp.output_dir = cfg->output_dir;
         lp.selected = cfg->selected;
         lp.providers = cfg->providers;
+        lp.image = cfg->image;
         for (const auto& [k, v] : cfg->providers)
             explicit_providers[stripVirtual(k)] = v;
         for (const auto& s : cfg->selected) {
@@ -225,6 +227,7 @@ int runBuild(const std::vector<std::string>& roots, const std::string& config_pa
     ecfg.toolchain = lp.toolchain;
     ecfg.output_dir = lp.output_dir;
     ecfg.image_formats = image_format_overrides.empty() ? lp.image_formats : image_format_overrides;
+    ecfg.image = lp.image;
 
     const fs::path device_file =
         device_table_override.empty() ? lp.device_table_file : fs::path{device_table_override};
